@@ -1,0 +1,43 @@
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Private/personal configuration
+config/profile.yaml
+config/opportunity_overrides.yaml
+
+# Personal test inputs
+data/milestone1_urls.txt
+
+# Internal/private docs
+docs/
+
+# Generated outputs
+output/*
+!output/.gitkeep
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build/package artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
