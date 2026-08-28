@@ -13,6 +13,9 @@ data/milestone1_urls.txt
 # Internal/private docs
 docs/
 
+# Local development notes
+Developer.md
+
 # Generated outputs
 output/*
 !output/.gitkeep
