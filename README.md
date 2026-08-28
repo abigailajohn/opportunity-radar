@@ -1,59 +1,71 @@
 # Opportunity Radar
 
-Personal Opportunity Radar system.
+Opportunity Radar is a personal opportunity intelligence system designed to help surface, evaluate, and prioritize opportunities that are actually worth paying attention to.
 
-## Run Milestone 1 with no API key
+The long-term goal is to continuously discover opportunities across areas such as:
 
-Deterministic mode is the v0.1 default:
+- Internships
+- Fellowships
+- Cybersecurity and software roles
+- AI and emerging technology programs
+- Conferences and CFPs
+- Travel-funded programs
+- Startup grants and founder opportunities
+- CTFs, hackathons, and competitions
+- Research and open-source programs
 
-```powershell
-python -m scripts.evaluate_urls data/milestone1_urls.txt
-```
+Rather than behaving like a generic opportunity board, Opportunity Radar evaluates opportunities against a structured personal profile and ranks them based on factors such as:
 
-Or select it explicitly:
+- Eligibility
+- Relevance
+- Opportunity value
+- Practical feasibility
+- Timing
+- Application friction
+- Confidence in the available information
 
-```powershell
-$env:OPPORTUNITY_RADAR_MODE = "deterministic"
-python -m scripts.evaluate_urls data/milestone1_urls.txt
-```
+## Current Status
 
-Put exactly ten nonblank HTTP/HTTPS URLs in `data/milestone1_urls.txt`. Optional factual corrections may be placed in `config/opportunity_overrides.yaml`. No OpenAI key is required.
+The project is currently in its first working milestone.
 
-To opt into OpenAI factual extraction later:
+Milestone 1 takes a small set of opportunity URLs and:
 
-```powershell
-$env:OPPORTUNITY_RADAR_MODE = "openai"
-$env:OPENAI_API_KEY = "your-api-key"
-$env:OPENAI_MODEL = "your-structured-output-capable-model"
-python -m scripts.evaluate_urls data/milestone1_urls.txt
-```
+1. Fetches and prepares the source pages
+2. Extracts structured opportunity facts
+3. Evaluates them against a structured profile
+4. Deduplicates repeated opportunities
+5. Scores and prioritizes them
+6. Produces a ranked digest
 
-OpenAI mode currently uses OpenAI for factual extraction and the same deterministic personalized assessor used by zero-cost mode.
+The current default mode is fully deterministic and does not require an LLM or paid API access.
 
-## Developer fetch inspection
+## Design Principles
 
-To manually inspect HTTP fetching and deterministic HTML preparation for one real page:
+Opportunity Radar is being built around a few core principles:
 
-```bash
-python -m scripts.fetch_url "https://example.com/opportunity"
-```
+- Discover broadly, but prioritize selectively
+- Keep factual opportunity data separate from personalized assessment
+- Preserve uncertainty instead of guessing
+- Use deterministic rules for eligibility, scoring, dates, and ranking where possible
+- Keep the user in control of final decisions
+- Preserve room for discovery outside obvious existing interests
+- Make future LLM-based reasoning optional rather than required
 
-This command is for development inspection only.
+## Architecture
 
-## Developer factual extraction
+The current system is split into separate stages:
 
-Configure credentials in the process environment; do not place secrets in source files:
-
-```powershell
-$env:OPENAI_API_KEY = "your-api-key"
-$env:OPENAI_MODEL = "your-structured-output-capable-model"
-```
-
-Then fetch and factually extract one page:
-
-```powershell
-python -m scripts.extract_url "https://example.com/opportunity"
-```
-
-This command outputs factual Opportunity JSON only. It does not perform personalized assessment.
-
+```text
+Opportunity URL
+      ↓
+Fetch + HTML preparation
+      ↓
+Factual extraction
+      ↓
+Profile-based evaluation
+      ↓
+Scoring + eligibility
+      ↓
+Deduplication
+      ↓
+Ranked digest
