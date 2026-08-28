@@ -186,6 +186,18 @@ class DeterministicSemanticAssessor:
                 positives.append(label)
         if opportunity.funding.cloud_credits or opportunity.funding.developer_credits:
             positives.append("developer/cloud credits")
+        extracted_benefits = {_norm(item) for item in opportunity.funding.other_benefits}
+        benefit_signals = {
+            "fully funded training": "fully funded training",
+            "training included": "training access",
+            "certification included": "certification access",
+            "mentorship": "mentorship",
+            "professional development": "professional development",
+            "paid placement": "paid placement",
+        }
+        for benefit, signal in benefit_signals.items():
+            if _norm(benefit) in extracted_benefits:
+                positives.append(signal)
         if relevance in {RelevanceLevel.EXCEPTIONAL_DIRECT_FIT, RelevanceLevel.STRONG_DIRECT_FIT}:
             positives.append("strong technical alignment")
         category_text = _norm(opportunity.category)
@@ -215,6 +227,21 @@ class DeterministicSemanticAssessor:
             value = ValueLevel.LIMITED
         else:
             value = ValueLevel.MINIMAL
+        value_rank = [
+            ValueLevel.MINIMAL, ValueLevel.LIMITED, ValueLevel.MODERATE,
+            ValueLevel.STRONG, ValueLevel.VERY_HIGH, ValueLevel.EXCEPTIONAL_MULTI_DIMENSIONAL,
+        ]
+        promoted = value
+        if "paid placement" in unique_positives:
+            promoted = ValueLevel.STRONG
+        elif "fully funded training" in unique_positives and any(
+            signal in unique_positives for signal in ("training access", "certification access")
+        ):
+            promoted = ValueLevel.STRONG
+        elif "fully funded training" in unique_positives:
+            promoted = ValueLevel.MODERATE
+        if value_rank.index(promoted) > value_rank.index(value):
+            value = promoted
         value_reason = (
             f"Evidence-backed value signals: {', '.join(unique_positives)}."
             if unique_positives
@@ -290,7 +317,7 @@ class DeterministicSemanticAssessor:
             friction_reason = f"The application has {friction_count} material requirements."
 
         concerns: list[str] = []
-        if opportunity.deadline is None:
+        if opportunity.deadline is None and not opportunity.rolling_application:
             concerns.append("Deadline is unknown.")
         if opportunity.eligibility.requirements_complete is not True:
             concerns.append("Published eligibility requirements are not confirmed complete.")

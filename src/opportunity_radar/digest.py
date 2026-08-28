@@ -33,7 +33,7 @@ def _location(opportunity: Opportunity) -> str:
 
 def _card(opportunity: Opportunity, assessment: OpportunityAssessment) -> str:
     concern = assessment.concerns[0] if assessment.concerns else "None identified"
-    deadline = opportunity.deadline.isoformat() if opportunity.deadline else "Unknown"
+    deadline = opportunity.deadline.isoformat() if opportunity.deadline else "Rolling" if opportunity.rolling_application else "Unknown"
     organization = opportunity.organization or "Unknown"
     link = opportunity.official_url or opportunity.application_url or opportunity.source_url
     return "\n".join(

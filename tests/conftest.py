@@ -47,6 +47,7 @@ def make_opportunity(
         (
             eligibility.nationalities_allowed,
             eligibility.nationalities_excluded,
+            eligibility.regions_allowed,
             eligibility.residence_requirements,
             eligibility.minimum_age is not None,
             eligibility.maximum_age is not None,

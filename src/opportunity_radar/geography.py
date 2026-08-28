@@ -67,6 +67,9 @@ ALIASES = {
     "usa": "united states",
     "uk": "united kingdom",
     "cote d ivoire": "ivory coast",
+    "nigerian": "nigeria",
+    "mauritian": "mauritius",
+    "french": "france",
 }
 
 
