@@ -12,7 +12,8 @@ def normalize_identity_text(value: str | None) -> str:
 
 def canonical_url(value: object) -> str:
     parts = urlsplit(str(value))
-    query = urlencode(sorted((k, v) for k, v in parse_qsl(parts.query) if not k.casefold().startswith("utm_")))
+    tracking = {"fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid"}
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(parts.query) if not k.casefold().startswith("utm_") and k.casefold() not in tracking))
     return urlunsplit((parts.scheme.casefold(), parts.netloc.casefold(), parts.path.rstrip("/"), query, ""))
 
 

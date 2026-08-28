@@ -19,6 +19,9 @@ Developer.md
 # Generated outputs
 output/*
 !output/.gitkeep
+*.db
+*.db-shm
+*.db-wal
 
 # Python
 **/__pycache__/

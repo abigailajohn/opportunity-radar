@@ -144,6 +144,9 @@ class Opportunity(BaseModel):
     organization: str | None = None
     category: str = "Unknown"
     subcategories: list[str] = Field(default_factory=list)
+    program_family: str | None = None
+    cycle_label: str | None = None
+    cycle_year: int | None = Field(default=None, ge=2000, le=2200)
     source_url: HttpUrl
     official_url: HttpUrl | None = None
     application_url: HttpUrl | None = None

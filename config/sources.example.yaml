@@ -1,0 +1,27 @@
+global_max_candidate_pages: 20
+
+sources:
+  - id: cybersafe-programmes
+    name: CyberSafe Foundation programmes
+    url: https://cybersafefoundation.org/our-programs/
+    source_type: opportunity_hub
+    enabled: true
+    category_focus:
+      - Fellowship
+      - Training
+      - Cybersecurity
+    check_frequency: weekly
+    max_links_per_run: 8
+    notes: Official CyberSafe Foundation programme directory.
+
+  - id: cern-summer-students
+    name: CERN Summer Student Programme
+    url: https://home.cern/summer-student-programme/
+    source_type: recurring_programme
+    enabled: true
+    category_focus:
+      - Student Programme
+      - Internship
+    check_frequency: weekly
+    max_links_per_run: 2
+    notes: Official recurring programme page; evaluate the configured page directly.

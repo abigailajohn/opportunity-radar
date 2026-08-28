@@ -26,7 +26,7 @@ Rather than behaving like a generic opportunity board, Opportunity Radar evaluat
 
 ## Current Status
 
-The project is currently in its first working milestone.
+The project currently includes Milestone 1 evaluation and Milestone 2 trusted-source discovery.
 
 Milestone 1 takes a small set of opportunity URLs and:
 
@@ -38,6 +38,8 @@ Milestone 1 takes a small set of opportunity URLs and:
 6. Produces a ranked digest
 
 The current default mode is fully deterministic and does not require an LLM or paid API access.
+
+Milestone 2 discovers candidate links from YAML-configured trusted sources, applies bounded deterministic traversal, evaluates only pages classified as specific opportunities, and records normalized versions in PostgreSQL. Supabase can provide the managed PostgreSQL database; the application does not depend on Supabase-specific APIs.
 
 ## Design Principles
 
@@ -69,3 +71,38 @@ Scoring + eligibility
 Deduplication
       ↓
 Ranked digest
+```
+
+Milestone 2 adds a bounded outer loop:
+
+```text
+Configured trusted sources
+      ↓
+Deterministic link discovery (maximum depth 2)
+      ↓
+Specific opportunity candidates only
+      ↓
+Milestone 1 extraction and evaluation
+      ↓
+PostgreSQL state + immutable structured versions
+      ↓
+New / changed digest
+```
+
+## PostgreSQL configuration
+
+Copy `.env.example` to `.env` and set:
+
+```text
+OPPORTUNITY_RADAR_DATABASE_URL=postgresql://...
+```
+
+For Supabase, use a PostgreSQL connection string supplied by the project settings and retain its required SSL options. Do not commit `.env` or database credentials.
+
+Run trusted-source discovery with:
+
+```text
+python -m scripts.discover config/sources.example.yaml --mode deterministic
+```
+
+The discovery command initializes the PostgreSQL tables when necessary. Automated tests use an in-memory implementation of the same persistence interface and do not connect to PostgreSQL or Supabase.
