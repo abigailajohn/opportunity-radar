@@ -70,9 +70,12 @@ class EligibilityRequirements(BaseModel):
     requirements_complete: bool | None = None
     nationalities_allowed: list[str] = Field(default_factory=list)
     nationalities_excluded: list[str] = Field(default_factory=list)
+    regions_allowed: list[str] = Field(default_factory=list)
     residence_requirements: list[str] = Field(default_factory=list)
     minimum_age: int | None = None
+    minimum_age_exclusive: bool = False
     maximum_age: int | None = None
+    maximum_age_exclusive: bool = False
     student_required: bool | None = None
     undergraduate_eligible: bool | None = None
     graduate_eligible: bool | None = None
@@ -83,6 +86,7 @@ class EligibilityRequirements(BaseModel):
     required_skills: list[str] = Field(default_factory=list)
     preferred_skills: list[str] = Field(default_factory=list)
     gender_requirements: list[str] = Field(default_factory=list)
+    language_requirements: list[str] = Field(default_factory=list)
     founder_required: bool | None = None
     startup_stage_requirements: list[str] = Field(default_factory=list)
     geographic_restrictions: list[str] = Field(default_factory=list)
@@ -124,6 +128,16 @@ class ManualOverrideRecord(BaseModel):
     source_file: str
 
 
+class ExtractionDiagnostics(BaseModel):
+    material_fields_found: list[str] = Field(default_factory=list)
+    material_fields_unknown: list[str] = Field(default_factory=list)
+    enrichment_attempted: bool = False
+    primary_source_url: HttpUrl | None = None
+    enrichment_source_url: HttpUrl | None = None
+    conflicts: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class Opportunity(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     title: str
@@ -157,6 +171,7 @@ class Opportunity(BaseModel):
     semantic_input_character_count: int = Field(default=0, ge=0)
     semantic_input_limit: int | None = Field(default=None, ge=1)
     manual_overrides: list[ManualOverrideRecord] = Field(default_factory=list)
+    extraction_diagnostics: ExtractionDiagnostics = Field(default_factory=ExtractionDiagnostics)
 
     @model_validator(mode="after")
     def material_facts_have_evidence(self) -> Opportunity:
@@ -175,6 +190,7 @@ class Opportunity(BaseModel):
             (
                 self.eligibility.nationalities_allowed,
                 self.eligibility.nationalities_excluded,
+                self.eligibility.regions_allowed,
                 self.eligibility.residence_requirements,
                 self.eligibility.minimum_age is not None,
                 self.eligibility.maximum_age is not None,
@@ -184,6 +200,8 @@ class Opportunity(BaseModel):
                 self.eligibility.minimum_university_year is not None,
                 self.eligibility.minimum_years_experience is not None,
                 self.eligibility.founder_required is not None,
+                self.eligibility.gender_requirements,
+                self.eligibility.language_requirements,
                 self.eligibility.geographic_restrictions,
                 self.geographic_restrictions,
             )

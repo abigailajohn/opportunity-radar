@@ -187,7 +187,9 @@ def test_provider_mode_selection_defaults_deterministic(monkeypatch) -> None:
     assert provider_mode_from_environment() is ProviderMode.DETERMINISTIC
     monkeypatch.setenv("OPPORTUNITY_RADAR_MODE", "openai")
     assert provider_mode_from_environment() is ProviderMode.OPENAI
-    assert build_provider_bundle(ProviderMode.DETERMINISTIC).extractor.__class__.__name__ == "DeterministicOpportunityExtractor"
+    extractor = build_provider_bundle(ProviderMode.DETERMINISTIC).extractor
+    assert extractor.__class__.__name__ == "OneHopOpportunityExtractor"
+    assert extractor.extractor.__class__.__name__ == "DeterministicOpportunityExtractor"
 
 
 def test_full_mocked_ten_url_pipeline_has_zero_llm_calls(tmp_path, profile) -> None:

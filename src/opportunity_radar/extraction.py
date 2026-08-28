@@ -34,6 +34,7 @@ class ExtractionFailureKind(StrEnum):
     SCHEMA_VALIDATION = "schema_validation"
     INSUFFICIENT_CONTENT = "insufficient_cleaned_content"
     UNGROUNDED_OUTPUT = "ungrounded_output"
+    NOT_OPPORTUNITY_PAGE = "not_opportunity_page"
 
 
 class ExtractionError(RuntimeError):
@@ -73,6 +74,11 @@ class InsufficientCleanedContentError(ExtractionError):
 class UngroundedExtractionError(ExtractionError):
     def __init__(self, message: str) -> None:
         super().__init__(ExtractionFailureKind.UNGROUNDED_OUTPUT, message)
+
+
+class NotOpportunityPageError(ExtractionError):
+    def __init__(self, message: str = "page lacks sufficient opportunity-specific evidence") -> None:
+        super().__init__(ExtractionFailureKind.NOT_OPPORTUNITY_PAGE, message)
 
 
 class ExtractedEvidence(BaseModel):
@@ -279,6 +285,8 @@ class SemanticOpportunityExtractor:
                 status=derive_status(
                     deadline=result.deadline,
                     as_of=page.fetched_at,
+                    opening_date=result.opening_date,
+                    rolling_application=bool(result.rolling_application),
                     confirmed_accepting=result.confirmed_accepting_applications,
                     confirmed_future_cycle=result.confirmed_future_cycle,
                     confirmed_opening_soon=result.confirmed_opening_soon,

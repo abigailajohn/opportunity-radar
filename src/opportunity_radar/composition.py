@@ -9,6 +9,7 @@ from opportunity_radar.deterministic_assessment import DeterministicSemanticAsse
 from opportunity_radar.deterministic_extraction import DeterministicOpportunityExtractor
 from opportunity_radar.extraction import OpenAIFactualExtractionProvider, SemanticOpportunityExtractor
 from opportunity_radar.fetching import HttpPageFetcher
+from opportunity_radar.enrichment import OneHopOpportunityExtractor
 from opportunity_radar.providers import OpportunityExtractor, PageFetcher, SemanticAssessor
 
 
@@ -42,7 +43,7 @@ def build_provider_bundle(
     fetcher = HttpPageFetcher(client=http_client)
     assessor = DeterministicSemanticAssessor()
     if mode is ProviderMode.DETERMINISTIC:
-        extractor: OpportunityExtractor = DeterministicOpportunityExtractor()
+        extractor: OpportunityExtractor = OneHopOpportunityExtractor(DeterministicOpportunityExtractor(), fetcher)
     else:
         provider = openai_provider or OpenAIFactualExtractionProvider.from_environment()
         extractor = SemanticOpportunityExtractor(provider)

@@ -19,11 +19,12 @@ ALLOWED_FIELDS: dict[str, set[str] | None] = {
     "program_start_date": None, "program_end_date": None, "rolling_application": None,
     "summary": None,
     "eligibility": {
-        "raw_text", "requirements_complete", "nationalities_allowed", "nationalities_excluded",
-        "residence_requirements", "minimum_age", "maximum_age", "student_required",
+        "raw_text", "requirements_complete", "nationalities_allowed", "nationalities_excluded", "regions_allowed",
+        "residence_requirements", "minimum_age", "minimum_age_exclusive", "maximum_age",
+        "maximum_age_exclusive", "student_required",
         "undergraduate_eligible", "graduate_eligible", "graduation_years",
         "minimum_university_year", "required_fields_of_study", "minimum_years_experience",
-        "required_skills", "preferred_skills", "gender_requirements", "founder_required",
+        "required_skills", "preferred_skills", "gender_requirements", "language_requirements", "founder_required",
         "startup_stage_requirements", "geographic_restrictions", "other_requirements",
     },
     "funding": {
@@ -113,12 +114,14 @@ class OpportunityOverrideApplier:
             ],
         ]
         candidate = Opportunity.model_validate(merged)
-        if "deadline" in values:
+        if {"deadline", "opening_date", "rolling_application"}.intersection(values):
             candidate = candidate.model_copy(
                 update={
                     "status": derive_status(
                         deadline=candidate.deadline,
                         as_of=opportunity.last_verified_at,
+                        opening_date=candidate.opening_date,
+                        rolling_application=bool(candidate.rolling_application),
                         confirmed_accepting=opportunity.status in {OpportunityStatus.OPEN, OpportunityStatus.CLOSING_SOON},
                     )
                 }

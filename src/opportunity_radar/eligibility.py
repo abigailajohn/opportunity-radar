@@ -73,7 +73,7 @@ def evaluate_eligibility(
     nationalities = profile.identity.nationality
     if requirements.nationalities_allowed:
         checked += 1
-        if not any(_matches(n, requirements.nationalities_allowed) for n in nationalities):
+        if not location_matches_restrictions(nationalities, requirements.nationalities_allowed):
             blockers.append("Profile nationality is not in the allowed nationality list.")
         else:
             evidence.append(f"Nationality: {', '.join(nationalities)}")
@@ -83,12 +83,19 @@ def evaluate_eligibility(
         if excluded:
             blockers.append(f"Nationality explicitly excluded: {', '.join(excluded)}.")
 
+    if requirements.regions_allowed:
+        checked += 1
+        if not location_matches_restrictions(nationalities, requirements.regions_allowed):
+            blockers.append("Profile nationality does not satisfy the allowed regional identity requirement.")
+        else:
+            evidence.append(f"Nationality {', '.join(nationalities)} satisfies region {', '.join(requirements.regions_allowed)}.")
+
     residence = profile.identity.residence.get("country")
     if requirements.residence_requirements:
         checked += 1
         if not residence:
             uncertainties.append("Profile residence is unavailable.")
-        elif not _matches(residence, requirements.residence_requirements):
+        elif not location_matches_restrictions([residence], requirements.residence_requirements):
             blockers.append(f"Residence requirement does not include {residence}.")
         else:
             evidence.append(f"Residence: {residence}")
@@ -96,16 +103,38 @@ def evaluate_eligibility(
     age = profile.identity.age.current
     if requirements.minimum_age is not None:
         checked += 1
-        if age < requirements.minimum_age:
-            blockers.append(f"Minimum age is {requirements.minimum_age}; profile age is {age}.")
+        fails_minimum = age <= requirements.minimum_age if requirements.minimum_age_exclusive else age < requirements.minimum_age
+        if fails_minimum:
+            qualifier = "strictly older than" if requirements.minimum_age_exclusive else "at least"
+            blockers.append(f"Applicant must be {qualifier} {requirements.minimum_age}; profile age is {age}.")
         else:
             evidence.append(f"Profile age {age} meets the minimum age.")
     if requirements.maximum_age is not None:
         checked += 1
-        if age > requirements.maximum_age:
+        fails_maximum = age >= requirements.maximum_age if requirements.maximum_age_exclusive else age > requirements.maximum_age
+        if fails_maximum:
             blockers.append(f"Maximum age is {requirements.maximum_age}; profile age is {age}.")
         else:
             evidence.append(f"Profile age {age} meets the maximum age.")
+
+    if requirements.gender_requirements:
+        checked += 1
+        gender = getattr(profile.identity, "gender", None)
+        if not gender:
+            uncertainties.append("Profile gender is unavailable for an explicit gender requirement.")
+        elif not _matches(str(gender), requirements.gender_requirements):
+            blockers.append("Profile gender does not meet the explicit gender requirement.")
+        else:
+            evidence.append(f"Gender: {gender}.")
+
+    if requirements.language_requirements:
+        checked += 1
+        languages = profile.identity.languages
+        missing = [language for language in requirements.language_requirements if not _matches(language, languages)]
+        if missing:
+            blockers.append(f"Required language not present in profile: {', '.join(missing)}.")
+        else:
+            evidence.append(f"Languages: {', '.join(languages)}.")
 
     is_student = profile.education.current_stage.year >= 1
     if requirements.student_required is not None:
@@ -172,6 +201,12 @@ def evaluate_eligibility(
             blockers.append("Explicit geographic restrictions do not include nationality or residence.")
         else:
             evidence.append("Profile nationality or residence meets the geographic restriction.")
+
+    if opportunity.extraction_diagnostics.conflicts:
+        uncertainties.extend(
+            f"Extraction conflict requires verification: {conflict}"
+            for conflict in opportunity.extraction_diagnostics.conflicts
+        )
 
     if blockers:
         return EligibilityDecision(
