@@ -15,6 +15,7 @@ from opportunity_radar.models import (
     ParticipationMode, SourceEvidence,
 )
 from opportunity_radar.normalization import derive_status
+from opportunity_radar.page_shape import PageShape, classify_page_shape
 
 SECTION_ALIASES = {
     "eligibility": ("eligibility", "eligibility criteria", "who is this for", "who can apply", "who is eligible", "requirements", "applicant requirements"),
@@ -211,12 +212,14 @@ def _category(title: str, soup: BeautifulSoup) -> str:
     body = _normalize(soup.get_text(" ", strip=True))
     rules = (
         ("Student Programme", r"\b(?:summer )?student programme\b|\bstudent program\b"),
-        ("Internship", r"\binternship\b|\bintern programme\b|\bintern program\b"),
-        ("Fellowship", r"\bfellowship\b|\bfellows programme\b|\bfellows program\b"), ("Hackathon / Competition", r"\bhackathon\b"),
+        ("Internship", r"\bintern(?:ship)?s?\b|\bintern programme\b|\bintern program\b"),
+        ("Fellowship", r"\bfellowships?\b|\bfellows programme\b|\bfellows program\b"), ("Hackathon / Competition", r"\bhackathons?\b"),
         ("CTF / Competition", r"\bctf\b|capture the flag"),
         ("Startup Competition", r"\b(?:startup|innovation) challenge\b"),
-        ("Scholarship", r"\bscholarship\b"), ("Grant", r"\bgrant\b"),
+        ("Scholarship", r"\bscholarships?\b"), ("Grant", r"\bgrants?\b"),
         ("Accelerator", r"\baccelerator\b|\bincubator\b"),
+        ("Conference", r"\bconference\b|\bcall for papers\b|\bcfp\b"),
+        ("Research Programme", r"\bresearch (?:programme|program)\b"),
     )
     for category, pattern in rules:
         if re.search(pattern, strong): return category
@@ -294,8 +297,35 @@ class DeterministicOpportunityExtractor:
 
     def extract(self, page: FetchedPage) -> Opportunity:
         soup = BeautifulSoup(page.raw_html, "html.parser"); text = page.cleaned_text.strip(); sections = _extract_sections(page.raw_html); records = _json_ld(soup)
+        shape = classify_page_shape(page)
+        rejected_shapes = {
+            PageShape.MULTI_OPPORTUNITY_LISTING,
+            PageShape.GENERIC_ADVICE_OR_ARTICLE,
+            PageShape.RECURRING_PROGRAMME_LANDING,
+            PageShape.JOB_BOARD_OR_CAREERS_LANDING,
+            PageShape.ORGANIZATION_PAGE,
+        }
+        if shape.shape in rejected_shapes:
+            detail = ", ".join(shape.signals) or "non-specific page shape"
+            raise NotOpportunityPageError(f"page classified as {shape.shape.value}: {detail}")
+        job_record = next((record for record in records if str(record.get("@type", "")).casefold() == "jobposting"), None)
+        if job_record and isinstance(job_record.get("description"), str):
+            metadata_text = BeautifulSoup(str(job_record["description"]), "html.parser").get_text("\n", strip=True)
+            text = f"{text}\n{metadata_text}".strip()
+            if re.search(r"\b(?:requirements?|qualifications?|who can apply|eligibility)\b", metadata_text, re.I):
+                sections["requirements"] = [metadata_text]
+        if job_record:
+            structured_requirements = [
+                str(job_record[key]) for key in ("qualifications", "educationRequirements", "experienceRequirements", "skills")
+                if isinstance(job_record.get(key), str) and str(job_record[key]).strip()
+            ]
+            if structured_requirements:
+                sections["requirements"] = structured_requirements
+            if isinstance(job_record.get("jobBenefits"), str) and str(job_record["jobBenefits"]).strip():
+                sections["benefits"] = [str(job_record["jobBenefits"])]
         meta = soup.find("meta", property="og:title"); h1 = soup.find("h1")
-        title = " ".join(str((meta.get("content") if meta else None) or (h1.get_text(" ", strip=True) if h1 else None) or page.page_title or "Unknown opportunity").split())
+        structured_title = job_record.get("title") if job_record and isinstance(job_record.get("title"), str) else job_record.get("name") if job_record and isinstance(job_record.get("name"), str) else None
+        title = " ".join(str(structured_title or (meta.get("content") if meta else None) or (h1.get_text(" ", strip=True) if h1 else None) or page.page_title or "Unknown opportunity").split())
         organization = _organization(records, soup, text); category = _category(title, soup)
         family_match = re.search(r"\bProgram(?:me)? family\s*:\s*([^\n]{2,100})", text, re.I)
         cycle_match = re.search(r"\bCycle(?: label)?\s*:\s*([^\n]{2,80})", text, re.I)
@@ -306,12 +336,17 @@ class DeterministicOpportunityExtractor:
         application_url = application_snippet = None
         for anchor in soup.find_all("a", href=True):
             label = _normalize(anchor.get_text(" ", strip=True))
-            if label in {"apply", "apply now", "application", "application form", "submit application", "start application"} or "apply now" in label:
+            if label in {"apply", "apply now", "application", "application form", "submit application", "start application", "view current openings", "view current opportunities", "view jobs"} or "apply now" in label:
                 application_url = urljoin(page.final_url, str(anchor["href"])); application_snippet = anchor.get_text(" ", strip=True) or application_url; break
 
         eligibility_text = _section_text(sections, "eligibility"); eligibility, eligibility_snippets = _eligibility(eligibility_text, sections)
         units = _structural_units(soup, text)
         deadline_date, deadline_snippet = _labeled_date(units, DEADLINE_LABELS, DEADLINE_EXCLUSIONS)
+        if deadline_date is None and job_record and isinstance(job_record.get("validThrough"), str):
+            try:
+                deadline_date = date.fromisoformat(str(job_record["validThrough"])[:10]); deadline_snippet = f"JobPosting validThrough: {job_record['validThrough']}"
+            except ValueError:
+                pass
         opening_date, opening_snippet = _labeled_date(units, OPENING_LABELS)
         window_opening, window_deadline, window_snippet = _application_window(units)
         if opening_date is None and window_opening is not None: opening_date, opening_snippet = window_opening, window_snippet
@@ -344,17 +379,24 @@ class DeterministicOpportunityExtractor:
         )
         location_match = re.search(r"\bLocation\s*:\s*([^\n]{2,100})", text, re.I); parts = [part.strip() for part in location_match.group(1).split(",") if part.strip()] if location_match else []
         country, city = (parts[-1] if parts else None), (parts[0] if len(parts) > 1 else None)
-        mode = ParticipationMode.REMOTE if re.search(r"\bfully remote\b|\bremote opportunity\b", text, re.I) else ParticipationMode.HYBRID if re.search(r"\bhybrid\b", text, re.I) else ParticipationMode.IN_PERSON if re.search(r"\bin-person\b|\bin person\b|\bon-?site\b", text, re.I) else ParticipationMode.UNKNOWN
+        if job_record and isinstance(job_record.get("jobLocation"), dict):
+            address = job_record["jobLocation"].get("address")
+            if isinstance(address, dict):
+                city = city or (str(address["addressLocality"]) if address.get("addressLocality") else None)
+                country = country or (str(address["addressCountry"]) if address.get("addressCountry") else None)
+        structured_remote = bool(job_record and str(job_record.get("jobLocationType", "")).casefold() == "telecommute")
+        mode = ParticipationMode.REMOTE if structured_remote or re.search(r"\bfully remote\b|\bremote opportunity\b", text, re.I) else ParticipationMode.HYBRID if re.search(r"\bhybrid\b", text, re.I) else ParticipationMode.IN_PERSON if re.search(r"\bin-person\b|\bin person\b|\bon-?site\b", text, re.I) else ParticipationMode.UNKNOWN
 
         title_specific = bool(re.search(r"\b(?:20\d{2}|fellowship|fellows|internship|programme|program|grant|ctf|hackathon|challenge|accelerator|scholarship)\b", _normalize(title)))
         specificity = (title_specific, application_url is not None, eligibility_text is not None, any((deadline, opening_date, start_date, end_date)), any((paid, salary, stipend, grant, prize, benefits)), category != "Unknown")
-        if sum(specificity) < 2: raise NotOpportunityPageError()
+        if shape.shape is not PageShape.SPECIFIC_OPPORTUNITY and sum(specificity) < 2: raise NotOpportunityPageError()
         evidence: list[SourceEvidence] = []
         for field, value, snippet in (("deadline", deadline.isoformat() if deadline else None, deadline_snippet), ("opening_date", opening_date, opening_snippet), ("program_start_date", start_date, start_snippet), ("program_end_date", end_date, end_snippet), ("funding.salary", salary, salary_snippet), ("funding.stipend", stipend, stipend_snippet), ("funding.grant", grant, grant_snippet), ("funding.prize_money", prize, prize_snippet)):
             if value is not None and snippet: evidence.append(_evidence(field, value, snippet, page))
-        hard_known = any((eligibility.nationalities_allowed, eligibility.regions_allowed, eligibility.residence_requirements, eligibility.minimum_age is not None, eligibility.student_required is not None, eligibility.minimum_years_experience is not None, eligibility.gender_requirements, eligibility.language_requirements))
+        hard_known = any((eligibility.nationalities_allowed, eligibility.regions_allowed, eligibility.residence_requirements, eligibility.minimum_age is not None, eligibility.student_required is not None, eligibility.undergraduate_eligible is not None, eligibility.graduate_eligible is not None, eligibility.minimum_years_experience is not None, eligibility.gender_requirements, eligibility.language_requirements))
         if hard_known:
-            evidence.extend(_evidence("eligibility", "structured requirement", snippet, page) for snippet in eligibility_snippets)
+            grounded_snippets = eligibility_snippets or ([eligibility_text[:300]] if eligibility_text else [])
+            evidence.extend(_evidence("eligibility", "structured requirement", snippet, page) for snippet in grounded_snippets)
         for field, component, snippet in (("funding.flights", flights, flights_snippet), ("funding.accommodation", accommodation, accommodation_snippet), ("funding.visa_support", visa_support, visa_snippet), ("funding.visa_fees", visa_fees, visa_fees_snippet)):
             if component.status is not CoverageStatus.UNKNOWN and snippet: evidence.append(_evidence(field, component.status.value, snippet, page))
         for label, snippet in benefit_evidence: evidence.append(_evidence("funding.other_benefits", label, snippet, page))

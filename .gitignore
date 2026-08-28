@@ -6,6 +6,8 @@
 # Private/personal configuration
 config/profile.yaml
 config/opportunity_overrides.yaml
+config/sources.yaml
+config/sources.local.yaml
 
 # Personal test inputs
 data/milestone1_urls.txt

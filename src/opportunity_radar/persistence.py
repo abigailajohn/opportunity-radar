@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from opportunity_radar.deduplication import canonical_url
 from opportunity_radar.discovery_models import ChangeClassification, DiscoveryCandidate, TrustedSource
 from opportunity_radar.models import Opportunity
+from opportunity_radar.search_models import SearchCandidate
 
 
 DATABASE_URL_ENV = "OPPORTUNITY_RADAR_DATABASE_URL"
@@ -77,6 +78,43 @@ CREATE TABLE IF NOT EXISTS opportunity_versions (
   UNIQUE(opportunity_id, version_number)
 );
 CREATE INDEX IF NOT EXISTS idx_opportunity_versions_latest ON opportunity_versions(opportunity_id, version_number DESC);
+
+CREATE TABLE IF NOT EXISTS search_candidates (
+  id BIGSERIAL PRIMARY KEY,
+  canonical_url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  snippet TEXT NOT NULL,
+  query TEXT NOT NULL,
+  query_mode TEXT NOT NULL,
+  search_rank INTEGER NOT NULL CHECK (search_rank > 0),
+  provider TEXT NOT NULL,
+  discovered_at TIMESTAMPTZ NOT NULL,
+  search_score INTEGER NOT NULL,
+  search_signals JSONB NOT NULL DEFAULT '[]'::jsonb,
+  page_shape TEXT,
+  page_shape_signals JSONB NOT NULL DEFAULT '[]'::jsonb,
+  proceeded_to_extraction BOOLEAN,
+  rejection_reason TEXT
+);
+ALTER TABLE search_candidates ADD COLUMN IF NOT EXISTS page_shape TEXT;
+ALTER TABLE search_candidates ADD COLUMN IF NOT EXISTS page_shape_signals JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE search_candidates ADD COLUMN IF NOT EXISTS proceeded_to_extraction BOOLEAN;
+ALTER TABLE search_candidates ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_search_candidates_url ON search_candidates(canonical_url);
+CREATE INDEX IF NOT EXISTS idx_search_candidates_discovered ON search_candidates(discovered_at DESC);
+
+CREATE TABLE IF NOT EXISTS opportunity_search_provenance (
+  id BIGSERIAL PRIMARY KEY,
+  opportunity_id BIGINT NOT NULL REFERENCES opportunities(id),
+  canonical_url TEXT NOT NULL,
+  query TEXT NOT NULL,
+  query_mode TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  first_discovered_at TIMESTAMPTZ NOT NULL,
+  last_discovered_at TIMESTAMPTZ NOT NULL,
+  UNIQUE(opportunity_id, canonical_url, query, query_mode, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_search_provenance_opportunity ON opportunity_search_provenance(opportunity_id);
 """
 
 MEANINGFUL_FIELDS = (
@@ -98,6 +136,8 @@ class PersistenceStore(Protocol):
     def persist_candidates(self, candidates: list[DiscoveryCandidate]) -> None: ...
     def persist_opportunity(self, opportunity: Opportunity, *, source_id: str, seen_at: datetime | None = None) -> PersistenceOutcome: ...
     def mark_digested(self, database_ids: list[int], *, at: datetime | None = None) -> None: ...
+    def persist_search_candidates(self, candidates: list[SearchCandidate]) -> None: ...
+    def persist_search_provenance(self, database_id: int, candidate: SearchCandidate) -> None: ...
 
 
 def meaningful_snapshot(opportunity: Opportunity) -> dict[str, Any]:
@@ -197,8 +237,8 @@ class PostgresOpportunityStore:
             version = cursor.fetchone(); previous = version["structured_data"] if version else None
             if isinstance(previous, str): previous = json.loads(previous)
             classification, changed = _classification(previous, snapshot)
-            cursor.execute("""UPDATE opportunities SET title=%s,organization=%s,category=%s,last_seen_at=%s,last_verified_at=%s,status=%s,deadline=%s,source_id=%s,program_family=%s,cycle_label=%s,cycle_year=%s,content_fingerprint=%s WHERE id=%s""",
-            (opportunity.title, opportunity.organization, opportunity.category, now, opportunity.last_verified_at, opportunity.status.value, opportunity.deadline, source_id, opportunity.program_family, opportunity.cycle_label, opportunity.cycle_year, fingerprint, database_id))
+            cursor.execute("""UPDATE opportunities SET title=%s,organization=%s,category=%s,last_seen_at=%s,last_verified_at=%s,status=%s,deadline=%s,program_family=%s,cycle_label=%s,cycle_year=%s,content_fingerprint=%s WHERE id=%s""",
+            (opportunity.title, opportunity.organization, opportunity.category, now, opportunity.last_verified_at, opportunity.status.value, opportunity.deadline, opportunity.program_family, opportunity.cycle_label, opportunity.cycle_year, fingerprint, database_id))
             if changed:
                 cursor.execute("SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM opportunity_versions WHERE opportunity_id=%s", (database_id,))
                 self._insert_version(cursor, database_id, int(cursor.fetchone()["next_version"]), now, fingerprint, snapshot, changed)
@@ -214,6 +254,35 @@ class PostgresOpportunityStore:
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.executemany("UPDATE opportunities SET last_digest_at=%s WHERE id=%s", [(timestamp, item) for item in database_ids])
 
+    def persist_search_candidates(self, candidates: list[SearchCandidate]) -> None:
+        if not candidates:
+            return
+        statement = """INSERT INTO search_candidates(canonical_url,title,snippet,query,query_mode,search_rank,provider,discovered_at,search_score,search_signals,page_shape,page_shape_signals,proceeded_to_extraction,rejection_reason)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s)"""
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.executemany(statement, [
+                (canonical_url(item.url), item.title, item.snippet, item.query, item.query_mode.value,
+                 item.search_rank, item.provider, item.discovered_at, item.search_score,
+                 json.dumps(item.search_signals), item.page_shape.value if item.page_shape else None,
+                 json.dumps(item.page_shape_signals), item.proceeded_to_extraction,
+                 item.rejection_reason) for item in candidates
+            ])
+
+    def persist_search_provenance(self, database_id: int, candidate: SearchCandidate) -> None:
+        statement = """INSERT INTO opportunity_search_provenance(opportunity_id,canonical_url,query,query_mode,provider,first_discovered_at,last_discovered_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT(opportunity_id,canonical_url,query,query_mode,provider)
+        DO UPDATE SET last_discovered_at=EXCLUDED.last_discovered_at"""
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            provenance = candidate.provenance or []
+            rows = [(database_id, canonical_url(candidate.url), item.query, item.query_mode.value,
+                     item.provider, candidate.discovered_at, candidate.discovered_at) for item in provenance]
+            if not rows:
+                rows = [(database_id, canonical_url(candidate.url), candidate.query,
+                         candidate.query_mode.value, candidate.provider, candidate.discovered_at,
+                         candidate.discovered_at)]
+            cursor.executemany(statement, rows)
+
 
 class InMemoryOpportunityStore:
     """Offline test double implementing the production persistence contract."""
@@ -222,6 +291,8 @@ class InMemoryOpportunityStore:
         self.sources: dict[str, TrustedSource] = {}; self.candidates: list[DiscoveryCandidate] = []
         self.opportunities: dict[str, dict[str, Any]] = {}; self.versions: dict[int, list[dict[str, Any]]] = {}
         self._next_id = 1
+        self.search_candidates: list[SearchCandidate] = []
+        self.search_provenance: list[dict[str, Any]] = []
 
     @property
     def version_count(self) -> int:
@@ -245,7 +316,7 @@ class InMemoryOpportunityStore:
             record = {"id": database_id, "canonical_url": canonical, "first_seen_at": now, "last_digest_at": None}
             self.opportunities[identity_key] = record; self.versions[database_id] = []
         else: database_id = record["id"]
-        record.update({"opportunity": opportunity.model_copy(deep=True), "source_id": source_id, "last_seen_at": now, "last_verified_at": opportunity.last_verified_at, "status": opportunity.status.value, "deadline": opportunity.deadline, "content_fingerprint": fingerprint})
+        record.update({"opportunity": opportunity.model_copy(deep=True), "source_id": record.get("source_id", source_id), "last_seen_at": now, "last_verified_at": opportunity.last_verified_at, "status": opportunity.status.value, "deadline": opportunity.deadline, "content_fingerprint": fingerprint})
         if changed: self.versions[database_id].append({"version_number": len(self.versions[database_id]) + 1, "recorded_at": now, "fingerprint": fingerprint, "snapshot": snapshot, "changed_fields": changed})
         return PersistenceOutcome(opportunity, classification, changed, database_id)
 
@@ -254,3 +325,18 @@ class InMemoryOpportunityStore:
         selected = set(database_ids)
         for record in self.opportunities.values():
             if record["id"] in selected: record["last_digest_at"] = timestamp
+
+    def persist_search_candidates(self, candidates: list[SearchCandidate]) -> None:
+        self.search_candidates.extend(item.model_copy(deep=True) for item in candidates)
+
+    def persist_search_provenance(self, database_id: int, candidate: SearchCandidate) -> None:
+        provenance = candidate.provenance or []
+        keys = [(database_id, canonical_url(candidate.url), item.query, item.query_mode.value, item.provider) for item in provenance]
+        if not keys:
+            keys = [(database_id, canonical_url(candidate.url), candidate.query, candidate.query_mode.value, candidate.provider)]
+        for key in keys:
+            existing = next((item for item in self.search_provenance if item["key"] == key), None)
+            if existing:
+                existing["last_discovered_at"] = candidate.discovered_at
+            else:
+                self.search_provenance.append({"key": key, "database_id": database_id, "candidate": candidate.model_copy(deep=True), "first_discovered_at": candidate.discovered_at, "last_discovered_at": candidate.discovered_at})

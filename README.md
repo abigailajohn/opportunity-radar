@@ -26,7 +26,7 @@ Rather than behaving like a generic opportunity board, Opportunity Radar evaluat
 
 ## Current Status
 
-The project currently includes Milestone 1 evaluation and Milestone 2 trusted-source discovery.
+The project currently includes Milestone 1 evaluation, Milestone 2 trusted-source discovery, and an experimental Milestone 3 open-web search orchestration layer.
 
 Milestone 1 takes a small set of opportunity URLs and:
 
@@ -40,6 +40,8 @@ Milestone 1 takes a small set of opportunity URLs and:
 The current default mode is fully deterministic and does not require an LLM or paid API access.
 
 Milestone 2 discovers candidate links from YAML-configured trusted sources, applies bounded deterministic traversal, evaluates only pages classified as specific opportunities, and records normalized versions in PostgreSQL. Supabase can provide the managed PostgreSQL database; the application does not depend on Supabase-specific APIs.
+
+Milestone 3 deterministically generates bounded, rotating Match and Discovery searches from the profile, normalizes and filters search results, and feeds candidate pages into the existing evaluation and PostgreSQL lifecycle pipeline. Autonomous search uses a replaceable search-provider boundary, with Tavily as the first production provider. Search provenance is retained separately from the opportunity's original source.
 
 ## Design Principles
 
@@ -89,20 +91,22 @@ PostgreSQL state + immutable structured versions
 New / changed digest
 ```
 
-## PostgreSQL configuration
-
-Copy `.env.example` to `.env` and set:
+Milestone 3 adds a non-recursive search loop:
 
 ```text
-OPPORTUNITY_RADAR_DATABASE_URL=postgresql://...
+Profile + preferences
+      ↓
+Deterministic Match / Discovery queries
+      ↓
+Replaceable search provider
+      ↓
+Canonicalization, filtering, deduplication, and caps
+      ↓
+Milestone 1 extraction and evaluation
+      ↓
+PostgreSQL opportunity state + search provenance
+      ↓
+New / changed search digest
 ```
 
-For Supabase, use a PostgreSQL connection string supplied by the project settings and retain its required SSL options. Do not commit `.env` or database credentials.
-
-Run trusted-source discovery with:
-
-```text
-python -m scripts.discover config/sources.example.yaml --mode deterministic
-```
-
-The discovery command initializes the PostgreSQL tables when necessary. Automated tests use an in-memory implementation of the same persistence interface and do not connect to PostgreSQL or Supabase.
+Open-web search remains deliberately bounded and non-recursive. PostgreSQL stores opportunity history and discovery provenance, while offline tests use replaceable fake providers and an in-memory persistence implementation.
