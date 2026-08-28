@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from opportunity_radar.deduplication import canonical_url
 from opportunity_radar.discovery_models import ChangeClassification, DiscoveryCandidate, TrustedSource
 from opportunity_radar.models import Opportunity
+from opportunity_radar.notification_models import DeliveryStatus, NotificationType
 from opportunity_radar.search_models import SearchCandidate
 
 
@@ -115,6 +116,40 @@ CREATE TABLE IF NOT EXISTS opportunity_search_provenance (
   UNIQUE(opportunity_id, canonical_url, query, query_mode, provider)
 );
 CREATE INDEX IF NOT EXISTS idx_search_provenance_opportunity ON opportunity_search_provenance(opportunity_id);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+  id BIGSERIAL PRIMARY KEY,
+  opportunity_id BIGINT NOT NULL REFERENCES opportunities(id),
+  notification_type TEXT NOT NULL,
+  triggering_fingerprint TEXT NOT NULL,
+  first_sent_at TIMESTAMPTZ,
+  last_sent_at TIMESTAMPTZ,
+  last_attempted_at TIMESTAMPTZ NOT NULL,
+  delivery_status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts > 0),
+  error TEXT,
+  UNIQUE(opportunity_id, notification_type, triggering_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_lookup
+ON notification_deliveries(opportunity_id, notification_type, triggering_fingerprint, delivery_status);
+
+CREATE TABLE IF NOT EXISTS notification_chunks (
+  id BIGSERIAL PRIMARY KEY,
+  notification_fingerprint TEXT NOT NULL,
+  notification_type TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+  chunk_count INTEGER NOT NULL CHECK (chunk_count > 0),
+  chunk_fingerprint TEXT NOT NULL,
+  delivery_status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts > 0),
+  first_sent_at TIMESTAMPTZ,
+  last_sent_at TIMESTAMPTZ,
+  last_attempted_at TIMESTAMPTZ NOT NULL,
+  error TEXT,
+  UNIQUE(notification_fingerprint, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_chunks_lookup
+ON notification_chunks(notification_fingerprint, chunk_index, chunk_fingerprint, delivery_status);
 """
 
 MEANINGFUL_FIELDS = (
@@ -138,6 +173,10 @@ class PersistenceStore(Protocol):
     def mark_digested(self, database_ids: list[int], *, at: datetime | None = None) -> None: ...
     def persist_search_candidates(self, candidates: list[SearchCandidate]) -> None: ...
     def persist_search_provenance(self, database_id: int, candidate: SearchCandidate) -> None: ...
+    def notification_was_sent(self, database_id: int, notification_type: NotificationType, fingerprint: str) -> bool: ...
+    def record_notification_delivery(self, database_id: int, notification_type: NotificationType, fingerprint: str, status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None) -> None: ...
+    def notification_chunk_was_sent(self, notification_fingerprint: str, chunk_index: int, chunk_fingerprint: str) -> bool: ...
+    def record_notification_chunk(self, notification_fingerprint: str, notification_type: NotificationType, chunk_index: int, chunk_count: int, chunk_fingerprint: str, status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None) -> None: ...
 
 
 def meaningful_snapshot(opportunity: Opportunity) -> dict[str, Any]:
@@ -283,6 +322,58 @@ class PostgresOpportunityStore:
                          candidate.discovered_at)]
             cursor.executemany(statement, rows)
 
+    def notification_was_sent(self, database_id: int, notification_type: NotificationType, fingerprint: str) -> bool:
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM notification_deliveries WHERE opportunity_id=%s AND notification_type=%s AND triggering_fingerprint=%s AND delivery_status=%s LIMIT 1",
+                (database_id, notification_type.value, fingerprint, DeliveryStatus.DELIVERED.value),
+            )
+            return cursor.fetchone() is not None
+
+    def record_notification_delivery(
+        self, database_id: int, notification_type: NotificationType, fingerprint: str,
+        status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None,
+    ) -> None:
+        sent_at = attempted_at if status is DeliveryStatus.DELIVERED else None
+        statement = """INSERT INTO notification_deliveries(opportunity_id,notification_type,triggering_fingerprint,first_sent_at,last_sent_at,last_attempted_at,delivery_status,attempts,error)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,1,%s)
+        ON CONFLICT(opportunity_id,notification_type,triggering_fingerprint) DO UPDATE SET
+        first_sent_at=COALESCE(notification_deliveries.first_sent_at,EXCLUDED.first_sent_at),
+        last_sent_at=COALESCE(EXCLUDED.last_sent_at,notification_deliveries.last_sent_at),
+        last_attempted_at=EXCLUDED.last_attempted_at,delivery_status=EXCLUDED.delivery_status,
+        attempts=notification_deliveries.attempts+1,error=EXCLUDED.error"""
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(statement, (database_id, notification_type.value, fingerprint, sent_at, sent_at, attempted_at, status.value, error))
+
+    def notification_chunk_was_sent(self, notification_fingerprint: str, chunk_index: int, chunk_fingerprint: str) -> bool:
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM notification_chunks WHERE notification_fingerprint=%s AND chunk_index=%s AND chunk_fingerprint=%s AND delivery_status=%s LIMIT 1",
+                (notification_fingerprint, chunk_index, chunk_fingerprint, DeliveryStatus.DELIVERED.value),
+            )
+            return cursor.fetchone() is not None
+
+    def record_notification_chunk(
+        self, notification_fingerprint: str, notification_type: NotificationType,
+        chunk_index: int, chunk_count: int, chunk_fingerprint: str,
+        status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None,
+    ) -> None:
+        sent_at = attempted_at if status is DeliveryStatus.DELIVERED else None
+        statement = """INSERT INTO notification_chunks(notification_fingerprint,notification_type,chunk_index,chunk_count,chunk_fingerprint,delivery_status,attempts,first_sent_at,last_sent_at,last_attempted_at,error)
+        VALUES(%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s)
+        ON CONFLICT(notification_fingerprint,chunk_index) DO UPDATE SET
+        notification_type=EXCLUDED.notification_type,chunk_count=EXCLUDED.chunk_count,
+        chunk_fingerprint=EXCLUDED.chunk_fingerprint,delivery_status=EXCLUDED.delivery_status,
+        attempts=notification_chunks.attempts+1,
+        first_sent_at=COALESCE(notification_chunks.first_sent_at,EXCLUDED.first_sent_at),
+        last_sent_at=COALESCE(EXCLUDED.last_sent_at,notification_chunks.last_sent_at),
+        last_attempted_at=EXCLUDED.last_attempted_at,error=EXCLUDED.error"""
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(statement, (
+                notification_fingerprint, notification_type.value, chunk_index, chunk_count,
+                chunk_fingerprint, status.value, sent_at, sent_at, attempted_at, error,
+            ))
+
 
 class InMemoryOpportunityStore:
     """Offline test double implementing the production persistence contract."""
@@ -293,6 +384,8 @@ class InMemoryOpportunityStore:
         self._next_id = 1
         self.search_candidates: list[SearchCandidate] = []
         self.search_provenance: list[dict[str, Any]] = []
+        self.notification_deliveries: dict[tuple[int, str, str], dict[str, Any]] = {}
+        self.notification_chunks: dict[tuple[str, int], dict[str, Any]] = {}
 
     @property
     def version_count(self) -> int:
@@ -340,3 +433,51 @@ class InMemoryOpportunityStore:
                 existing["last_discovered_at"] = candidate.discovered_at
             else:
                 self.search_provenance.append({"key": key, "database_id": database_id, "candidate": candidate.model_copy(deep=True), "first_discovered_at": candidate.discovered_at, "last_discovered_at": candidate.discovered_at})
+
+    def notification_was_sent(self, database_id: int, notification_type: NotificationType, fingerprint: str) -> bool:
+        record = self.notification_deliveries.get((database_id, notification_type.value, fingerprint))
+        return bool(record and record["status"] is DeliveryStatus.DELIVERED)
+
+    def record_notification_delivery(
+        self, database_id: int, notification_type: NotificationType, fingerprint: str,
+        status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None,
+    ) -> None:
+        key = (database_id, notification_type.value, fingerprint)
+        record = self.notification_deliveries.get(key)
+        if record is None:
+            record = {"first_sent_at": None, "last_sent_at": None, "attempts": 0}
+            self.notification_deliveries[key] = record
+        record["attempts"] += 1
+        record["last_attempted_at"] = attempted_at
+        record["status"] = status
+        record["error"] = error
+        if status is DeliveryStatus.DELIVERED:
+            record["first_sent_at"] = record["first_sent_at"] or attempted_at
+            record["last_sent_at"] = attempted_at
+
+    def notification_chunk_was_sent(self, notification_fingerprint: str, chunk_index: int, chunk_fingerprint: str) -> bool:
+        record = self.notification_chunks.get((notification_fingerprint, chunk_index))
+        return bool(
+            record and record["chunk_fingerprint"] == chunk_fingerprint
+            and record["status"] is DeliveryStatus.DELIVERED
+        )
+
+    def record_notification_chunk(
+        self, notification_fingerprint: str, notification_type: NotificationType,
+        chunk_index: int, chunk_count: int, chunk_fingerprint: str,
+        status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None,
+    ) -> None:
+        key = (notification_fingerprint, chunk_index)
+        record = self.notification_chunks.get(key)
+        if record is None:
+            record = {"first_sent_at": None, "last_sent_at": None, "attempts": 0}
+            self.notification_chunks[key] = record
+        record.update({
+            "notification_type": notification_type, "chunk_index": chunk_index,
+            "chunk_count": chunk_count, "chunk_fingerprint": chunk_fingerprint,
+            "status": status, "last_attempted_at": attempted_at, "error": error,
+        })
+        record["attempts"] += 1
+        if status is DeliveryStatus.DELIVERED:
+            record["first_sent_at"] = record["first_sent_at"] or attempted_at
+            record["last_sent_at"] = attempted_at
