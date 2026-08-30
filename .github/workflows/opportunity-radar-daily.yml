@@ -2,7 +2,7 @@ name: Opportunity Radar Daily
 
 on:
   schedule:
-    - cron: "0 4 * * *"
+    - cron: "53 3 * * *"
   workflow_dispatch:
 
 permissions:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class NotificationType(StrEnum):
     IMMEDIATE_ALERT = "immediate_alert"
     DAILY_DIGEST = "daily_digest"
+    DAILY_HEARTBEAT = "daily_heartbeat"
 
 
 class NotificationSeverity(StrEnum):

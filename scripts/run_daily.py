@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -54,17 +55,25 @@ def main(argv: list[str] | None = None) -> int:
                 providers.assessor, store, source_configuration=source_configuration,
                 search_configuration=search_configuration, as_of=date.today(),
                 opportunity_transform=overrides.apply,
+                run_id=os.getenv("GITHUB_RUN_ID") or os.getenv("OPPORTUNITY_RADAR_RUN_ID"),
             )
         write_daily_outputs(result, args.output)
     except (OSError, ValueError, RuntimeError) as exc:
         parser.error(str(exc))
-    print(f"Notifications planned: {len(result.planned_notifications)}")
-    print(f"Deliveries succeeded: {sum(item.status.value == 'delivered' for item in result.deliveries)}")
-    print(f"Deliveries failed: {sum(item.status.value == 'failed' for item in result.deliveries)}")
-    print(f"Notification failures: {len(result.notification_failures)}")
+    summary = result.summary
+    print("Daily cycle complete")
+    print(f"Search queries: {summary.search_queries_executed}")
+    print(f"Search results: {summary.search_results_returned}")
+    print(f"Candidates fetched: {summary.candidates_checked}")
+    print(f"Evaluated: {summary.opportunities_evaluated}")
+    print(f"New: {summary.new_opportunities}")
+    print(f"Changed: {summary.changed_opportunities}")
+    print(f"Notifications selected: {len(result.planned_notifications)}")
+    print(f"Telegram deliveries: {sum(item.status.value == 'delivered' and item.chunks_sent > 0 for item in result.deliveries)}")
+    print(f"Isolated failures: {summary.isolated_failures}")
+    print(f"Notification delivery failures: {sum(item.status.value == 'failed' for item in result.deliveries)}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -177,6 +177,7 @@ class PersistenceStore(Protocol):
     def record_notification_delivery(self, database_id: int, notification_type: NotificationType, fingerprint: str, status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None) -> None: ...
     def notification_chunk_was_sent(self, notification_fingerprint: str, chunk_index: int, chunk_fingerprint: str) -> bool: ...
     def record_notification_chunk(self, notification_fingerprint: str, notification_type: NotificationType, chunk_index: int, chunk_count: int, chunk_fingerprint: str, status: DeliveryStatus, *, attempted_at: datetime, error: str | None = None) -> None: ...
+    def notification_fingerprint_was_delivered(self, notification_fingerprint: str) -> bool: ...
 
 
 def meaningful_snapshot(opportunity: Opportunity) -> dict[str, Any]:
@@ -374,6 +375,17 @@ class PostgresOpportunityStore:
                 chunk_fingerprint, status.value, sent_at, sent_at, attempted_at, error,
             ))
 
+    def notification_fingerprint_was_delivered(self, notification_fingerprint: str) -> bool:
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT COUNT(*) FILTER (WHERE delivery_status=%s) AS delivered,
+                          COALESCE(MAX(chunk_count), 0) AS expected
+                   FROM notification_chunks WHERE notification_fingerprint=%s""",
+                (DeliveryStatus.DELIVERED.value, notification_fingerprint),
+            )
+            row = cursor.fetchone()
+            return bool(row and int(row["expected"]) > 0 and int(row["delivered"]) >= int(row["expected"]))
+
 
 class InMemoryOpportunityStore:
     """Offline test double implementing the production persistence contract."""
@@ -481,3 +493,14 @@ class InMemoryOpportunityStore:
         if status is DeliveryStatus.DELIVERED:
             record["first_sent_at"] = record["first_sent_at"] or attempted_at
             record["last_sent_at"] = attempted_at
+
+    def notification_fingerprint_was_delivered(self, notification_fingerprint: str) -> bool:
+        records = [
+            record for (fingerprint, _), record in self.notification_chunks.items()
+            if fingerprint == notification_fingerprint
+        ]
+        if not records:
+            return False
+        expected = max(int(record["chunk_count"]) for record in records)
+        delivered = sum(record["status"] is DeliveryStatus.DELIVERED for record in records)
+        return delivered >= expected

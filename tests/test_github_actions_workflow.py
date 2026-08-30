@@ -23,7 +23,7 @@ def load_workflow() -> tuple[str, dict]:
 
 def test_daily_workflow_schedule_runtime_and_concurrency() -> None:
     _, workflow = load_workflow()
-    assert workflow["on"]["schedule"] == [{"cron": "0 4 * * *"}]
+    assert workflow["on"]["schedule"] == [{"cron": "53 3 * * *"}]
     assert "workflow_dispatch" in workflow["on"]
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"] == {

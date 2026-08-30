@@ -26,9 +26,12 @@ class NotificationItem:
 class PlannedNotification:
     payload: NotificationPayload
     items: tuple[NotificationItem, ...]
+    identity_key: str | None = None
 
     @property
     def fingerprint(self) -> str:
+        if self.identity_key is not None:
+            return hashlib.sha256(f"notification-identity:{self.identity_key}".encode("utf-8")).hexdigest()
         identity = {
             "notification_type": self.payload.notification_type.value,
             "title": self.payload.title,

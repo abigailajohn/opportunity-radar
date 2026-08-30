@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -157,6 +157,84 @@ def test_full_daily_orchestration_uses_known_source_search_and_isolates_delivery
     assert run.planned_notifications and run.deliveries[0].status is DeliveryStatus.FAILED
     assert run.notification_failures
     assert store.notification_deliveries
+    assert all(item.notification_type is not NotificationType.DAILY_HEARTBEAT for item in run.planned_notifications)
+
+
+def heartbeat_run(profile, store, notifier, *, now: datetime = NOW, run_id: str = "test-run"):
+    configuration = SearchConfiguration(
+        max_queries_per_run=1, max_results_per_query=1,
+        global_candidate_cap=1, fetch_cap=1,
+    )
+    query = generate_search_queries(profile, configuration, rotation_date=now.date())[0]
+    url = "https://example.test/unavailable-opportunity"
+    search = FakeSearchProvider({
+        query.text: [SearchResult(
+            title="Security Fellowship Applications 2027", url=url,
+            snippet="Applications are open for this fellowship.", rank=1,
+            query=query.text, provider="fake",
+        )],
+    })
+    return run_daily(
+        profile, search, notifier, FakePageFetcher({}),
+        DeterministicOpportunityExtractor(), FakeSemanticAssessor({}), store,
+        search_configuration=configuration, as_of=now.date(), now=now,
+        run_id=run_id,
+    )
+
+
+def test_successful_empty_run_sends_heartbeat_with_useful_counts(profile) -> None:
+    store = InMemoryOpportunityStore()
+    notifier = FakeNotificationProvider()
+    run = heartbeat_run(profile, store, notifier)
+    assert len(run.planned_notifications) == 1
+    heartbeat = run.planned_notifications[0]
+    assert heartbeat.notification_type is NotificationType.DAILY_HEARTBEAT
+    assert "Today's scan completed." in heartbeat.body
+    assert "Search results: 1" in heartbeat.body
+    assert "Candidates checked: 1" in heartbeat.body
+    assert "Opportunities evaluated: 0" in heartbeat.body
+    assert "New worthwhile: 0" in heartbeat.body
+    assert "Isolated failures: 1" in heartbeat.body
+    assert run.deliveries[0].status is DeliveryStatus.DELIVERED
+    assert run.deliveries[0].chunks_sent == 1
+
+
+def test_heartbeat_is_suppressed_for_same_run_and_allowed_next_day(profile) -> None:
+    store = InMemoryOpportunityStore()
+    notifier = FakeNotificationProvider()
+    first = heartbeat_run(profile, store, notifier, run_id="github-run-100")
+    sent_after_first = len(notifier.sent_chunks)
+    retry = heartbeat_run(profile, store, notifier, run_id="github-run-100")
+    assert first.deliveries[0].chunks_sent == 1
+    assert retry.deliveries[0].status is DeliveryStatus.DELIVERED
+    assert retry.deliveries[0].chunks_sent == 0
+    assert len(notifier.sent_chunks) == sent_after_first
+
+    following_day = heartbeat_run(
+        profile, store, notifier, now=NOW + timedelta(days=1),
+        run_id="github-run-101",
+    )
+    assert following_day.deliveries[0].chunks_sent == 1
+    assert len(notifier.sent_chunks) == sent_after_first + 1
+
+
+def test_fatal_orchestration_failure_does_not_send_success_heartbeat(profile, monkeypatch) -> None:
+    notifier = FakeNotificationProvider()
+
+    def fatal_pipeline(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("fatal orchestration failure")
+
+    monkeypatch.setattr("opportunity_radar.milestone4.run_search_pipeline", fatal_pipeline)
+    with pytest.raises(RuntimeError, match="fatal orchestration failure"):
+        run_daily(
+            profile, FakeSearchProvider({}), notifier, FakePageFetcher({}),
+            DeterministicOpportunityExtractor(), FakeSemanticAssessor({}),
+            InMemoryOpportunityStore(), as_of=NOW.date(), now=NOW,
+            run_id="fatal-run",
+        )
+    assert notifier.sent == []
+    assert notifier.sent_chunks == []
 
 
 def test_notification_schema_is_postgresql_and_offline() -> None:
